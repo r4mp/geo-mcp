@@ -16,11 +16,6 @@ def timezone_name(lat: float, lon: float) -> str | None:
     return _tf.timezone_at(lat=lat, lng=lon)
 
 
-def local_now(lat: float, lon: float) -> datetime:
-    """Current time at a coordinate (timezone-aware; UTC if the zone is unknown)."""
-    return datetime.now(ZoneInfo(timezone_name(lat, lon) or "UTC"))
-
-
 def _format_offset(now: datetime) -> str:
     minutes = int(now.utcoffset().total_seconds() // 60)
     sign = "+" if minutes >= 0 else "-"

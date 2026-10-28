@@ -1,43 +1,61 @@
 import asyncio
-from datetime import datetime, time
+from datetime import datetime
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from zoneinfo import ZoneInfo
 
 import adapters.places as places
 
 
+BERLIN = (52.52, 13.405)
+TZ = ZoneInfo("Europe/Berlin")
+
+
+def _at(*args):
+    return datetime(*args, tzinfo=TZ)
+
+
 # Wednesday 2026-10-28
 @pytest.mark.parametrize("oh, now, expected", [
-    ("Mo-Su 08:00-20:00", datetime(2026, 10, 28, 12, 0), True),
-    ("Mo-Su 08:00-20:00", datetime(2026, 10, 28, 21, 0), False),
-    ("Mo-Fr 09:00-17:00; Sa 10:00-14:00", datetime(2026, 10, 31, 11, 0), True),
-    ("Mo-Fr 09:00-17:00; Sa 10:00-14:00", datetime(2026, 11, 1, 11, 0), False),
-    ("24/7", datetime(2026, 10, 28, 3, 0), True),
+    ("Mo-Su 08:00-20:00", _at(2026, 10, 28, 12, 0), "yes"),
+    ("Mo-Su 08:00-20:00", _at(2026, 10, 28, 21, 0), "no"),
+    ("Mo-Fr 09:00-17:00; Sa 10:00-14:00", _at(2026, 10, 31, 11, 0), "yes"),
+    ("Mo-Fr 09:00-17:00; Sa 10:00-14:00", _at(2026, 11, 1, 11, 0), "no"),
+    ("24/7", _at(2026, 10, 28, 3, 0), "yes"),
     # Ranges past midnight
-    ("Mo-Su 10:00-01:00", datetime(2026, 10, 28, 23, 0), True),
-    ("Mo-Su 10:00-01:00", datetime(2026, 10, 29, 0, 30), True),
-    ("Mo-Su 10:00-01:00", datetime(2026, 10, 29, 2, 0), False),
-    ("We 18:00-02:00", datetime(2026, 10, 29, 1, 0), True),   # Thursday night, open from Wednesday
-    ("We 18:00-02:00", datetime(2026, 10, 28, 1, 0), False),  # Wednesday night, Tuesday was closed
-    ("Mo-Su 18:00-00:00", datetime(2026, 10, 28, 23, 30), True),
+    ("Mo-Su 10:00-01:00", _at(2026, 10, 28, 23, 0), "yes"),
+    ("Mo-Su 10:00-01:00", _at(2026, 10, 29, 0, 30), "yes"),
+    ("Mo-Su 10:00-01:00", _at(2026, 10, 29, 2, 0), "no"),
+    ("We 18:00-02:00", _at(2026, 10, 29, 1, 0), "yes"),   # Thursday night, open from Wednesday
+    ("We 18:00-02:00", _at(2026, 10, 28, 1, 0), "no"),    # Wednesday night, Tuesday was closed
+    ("Fr 20:00-26:00", _at(2026, 10, 31, 1, 0), "yes"),
+    # Public holidays are derived from the coordinates (Christmas in Germany)
+    ("Mo-Fr 08:00-18:00; PH off", _at(2026, 12, 25, 10, 0), "no"),
+    ("Mo-Fr 08:00-18:00; PH off", _at(2026, 12, 22, 10, 0), "yes"),
+    ("sunrise-sunset", _at(2026, 10, 28, 12, 0), "yes"),
+    ("sunrise-sunset", _at(2026, 10, 28, 22, 0), "no"),
+    ("Mo-Fr 08:00-18:00 unknown", _at(2026, 10, 28, 10, 0), "unknown"),
 ])
-def test_is_open(oh, now, expected):
-    assert places._is_open(oh, now) is expected
+def test_opening_state(oh, now, expected):
+    assert places._opening_state(oh, *BERLIN, now)["open_now"] == expected
 
 
-def test_split_midnight():
-    assert places._split_midnight("Mo-Su 10:00-01:00") == ("Mo-Su 10:00-24:00", [time(1, 0)])
-    assert places._split_midnight("Fr 20:00-26:00") == ("Fr 20:00-24:00", [time(2, 0)])
-    assert places._split_midnight("Mo 18:00-00:00") == ("Mo 18:00-24:00", [])
-    assert places._split_midnight("Mo 08:00-12:00") == ("Mo 08:00-12:00", [])
+def test_opening_state_uses_local_time_of_the_place():
+    # 17:30 UTC is 18:30 in Berlin: closed there
+    utc = datetime(2026, 10, 28, 17, 30, tzinfo=ZoneInfo("UTC"))
+    assert places._opening_state("Mo-Su 08:00-18:00", *BERLIN, utc)["open_now"] == "no"
 
 
-def test_open_now_unknown_for_missing_or_unparsable():
-    assert places._open_now("", 52.52, 13.40) == "unknown"
-    assert places._open_now("sunrise-sunset", 52.52, 13.40) in {"yes", "no", "unknown"}
-    assert places._open_now("this is not a schedule", 52.52, 13.40) == "unknown"
+def test_opening_state_next_change():
+    state = places._opening_state("Mo-Su 10:00-01:00", *BERLIN, _at(2026, 10, 28, 23, 0))
+    assert state == {"open_now": "yes", "next_change": "2026-10-29T01:00"}
+
+
+def test_opening_state_unknown_for_missing_or_malformed():
+    assert places._opening_state("", *BERLIN)["open_now"] == "unknown"
+    assert places._opening_state("this is not a schedule", *BERLIN) == {"open_now": "unknown", "next_change": None}
 
 
 def test_distance_m():
@@ -62,7 +80,8 @@ def _node(name, lat, lon, **tags):
 
 def test_build_places_sorts_by_status_then_distance(monkeypatch):
     status = {"Open far": "yes", "Open near": "yes", "Closed near": "no", "Unknown": "unknown"}
-    monkeypatch.setattr(places, "_open_now", lambda oh, lat, lon: status[oh])
+    monkeypatch.setattr(places, "_opening_state",
+                        lambda oh, lat, lon: {"open_now": status[oh], "next_change": None})
     elements = [
         _node("Closed near", 52.5201, 13.405, opening_hours="Closed near"),
         _node("Open far", 52.53, 13.405, opening_hours="Open far"),
@@ -110,3 +129,45 @@ def test_nearby_places_clamps_radius(monkeypatch):
 def test_nearby_places_rejects_bad_input():
     assert "error" in asyncio.run(places.nearby_places(52.52, 13.405, "cafe", radius_m=0))
     assert "error" in asyncio.run(places.nearby_places(52.52, 13.405, "zoo"))
+
+
+def _mock_overpass_hosts(monkeypatch, handler):
+    hosts = []
+
+    def record(request):
+        hosts.append(request.url.host)
+        return handler(request)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(places.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(record), **kw))
+    return hosts
+
+
+def test_overpass_falls_back_to_next_instance(monkeypatch):
+    def handler(request):
+        if request.url.host == "overpass-api.de":
+            raise httpx.ReadTimeout("busy", request=request)
+        return httpx.Response(200, json={"elements": [_node("Cafe", 52.52, 13.405)]})
+
+    hosts = _mock_overpass_hosts(monkeypatch, handler)
+    result = asyncio.run(places.nearby_places(52.52, 13.405, "cafe"))
+    assert hosts == ["overpass-api.de", "overpass.openstreetmap.fr"]
+    assert result["places"][0]["name"] == "Cafe"
+
+
+def test_overpass_uses_first_instance_when_it_works(monkeypatch):
+    hosts = _mock_overpass_hosts(monkeypatch, lambda r: httpx.Response(200, json={"elements": []}))
+    asyncio.run(places.nearby_places(52.52, 13.405, "cafe"))
+    assert hosts == ["overpass-api.de"]
+
+
+def test_overpass_reports_error_when_all_instances_fail(monkeypatch):
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr("adapters.http.asyncio.sleep", lambda s: real_sleep(0))
+    hosts = _mock_overpass_hosts(monkeypatch, lambda r: httpx.Response(503))
+    result = asyncio.run(places.nearby_places(52.52, 13.405, "cafe"))
+    assert result["status_code"] == 502
+    assert "Overpass" in result["error"]
+    # first instance once, last instance with one retry
+    assert hosts == ["overpass-api.de", "overpass.openstreetmap.fr", "overpass.openstreetmap.fr"]
