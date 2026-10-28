@@ -38,7 +38,26 @@ CATEGORY_MAP = {
     "hotel": ("tourism", "hotel"),
     "bank": ("amenity", "bank"),
     "gas_station": ("amenity", "fuel"),
+    "atm": ("amenity", "atm"),
+    "bar": ("amenity", "bar"),
+    "pub": ("amenity", "pub"),
+    "fast_food": ("amenity", "fast_food"),
+    "bakery": ("shop", "bakery"),
+    "doctor": ("amenity", "doctors"),
+    "dentist": ("amenity", "dentist"),
+    "toilets": ("amenity", "toilets"),
+    "parking": ("amenity", "parking"),
+    "charging_station": ("amenity", "charging_station"),
+    "museum": ("tourism", "museum"),
+    "post_office": ("amenity", "post_office"),
+    "police": ("amenity", "police"),
 }
+
+# Often mapped without a name; these are still worth listing.
+UNNAMED_OK = {"atm", "toilets", "parking", "charging_station"}
+
+# Optional OSM tags passed through when present.
+EXTRA_TAGS = ["cuisine", "wheelchair", "outdoor_seating", "takeaway"]
 
 
 def _build_query(lat: float, lon: float, key: str, value: str, radius: int) -> str:
@@ -89,12 +108,20 @@ def _address(tags: dict) -> str:
     return ", ".join(filter(None, [street, city]))
 
 
-def _build_places(elements: list[dict], lat: float, lon: float) -> list[dict]:
-    """Named places, open first, then unknown, then closed; nearest first within each."""
+def _name(tags: dict, category: str) -> str | None:
+    """Name, else brand/operator; unnamed places only for categories where that is normal."""
+    name = tags.get("name") or tags.get("brand") or tags.get("operator")
+    if not name and category in UNNAMED_OK:
+        name = category.replace("_", " ").capitalize()
+    return name
+
+
+def _build_places(elements: list[dict], lat: float, lon: float, category: str = "") -> list[dict]:
+    """Places, open first, then unknown, then closed; nearest first within each."""
     places = []
     for el in elements:
         tags = el.get("tags", {})
-        name = tags.get("name")
+        name = _name(tags, category)
         el_lat = el.get("lat") or el.get("center", {}).get("lat")
         el_lon = el.get("lon") or el.get("center", {}).get("lon")
         if not name or el_lat is None or el_lon is None:
@@ -111,6 +138,7 @@ def _build_places(elements: list[dict], lat: float, lon: float) -> list[dict]:
             "website": tags.get("website", tags.get("contact:website", "")),
             "opening_hours": oh or "not recorded",
             **_opening_state(oh, el_lat, el_lon),
+            **{t: tags[t] for t in EXTRA_TAGS if t in tags},
         })
 
     rank = {"yes": 0, "unknown": 1, "no": 2}
@@ -150,7 +178,7 @@ async def nearby_places(lat: float, lon: float, category: str, radius_m: int = 1
     except ServiceError as exc:
         return exc.to_dict()
 
-    places = _build_places(data.get("elements", []), lat, lon)
+    places = _build_places(data.get("elements", []), lat, lon, category.lower())
     result = {
         "category": category,
         "lat": lat,

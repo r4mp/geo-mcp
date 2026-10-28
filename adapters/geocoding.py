@@ -43,31 +43,50 @@ async def _nominatim(path: str, params: dict):
     return data
 
 
-async def geocode(address: str) -> dict:
-    """Address → lat/lon."""
+MAX_LIMIT = 10
+
+
+def _params(language: str | None, **params) -> dict:
+    # Without accept-language, Nominatim answers in the local language of each place.
+    return {**params, "format": "json", **({"accept-language": language} if language else {})}
+
+
+def _result(item: dict) -> dict:
+    return {
+        "display_name": item["display_name"],
+        "lat": float(item["lat"]),
+        "lon": float(item["lon"]),
+        "type": item.get("type", "unknown"),
+    }
+
+
+async def geocode(address: str, limit: int = 1, language: str | None = None) -> dict:
+    """
+    Address → lat/lon of the best match. With limit > 1, "results" also lists
+    up to that many candidates, for ambiguous names like "Springfield".
+    language: e.g. "de" or "en" for display names.
+    """
+    if not 1 <= limit <= MAX_LIMIT:
+        return {"error": f"limit must be within 1..{MAX_LIMIT}", "status_code": 400}
     try:
-        results = await _nominatim("/search", {"q": address, "format": "json", "limit": 1})
+        results = await _nominatim("/search", _params(language, q=address, limit=limit))
     except ServiceError as exc:
         return exc.to_dict()
 
     if not results:
         return {"error": f"No results found for: {address}", "status_code": 404}
 
-    top = results[0]
-    return {
-        "address": address,
-        "display_name": top["display_name"],
-        "lat": float(top["lat"]),
-        "lon": float(top["lon"]),
-        "type": top.get("type", "unknown"),
-        "source": "OpenStreetMap Nominatim",
-    }
+    result = {"address": address, **_result(results[0])}
+    if limit > 1:
+        result["results"] = [_result(item) for item in results]
+    result["source"] = "OpenStreetMap Nominatim"
+    return result
 
 
-async def reverse_geocode(lat: float, lon: float) -> dict:
-    """lat/lon → address."""
+async def reverse_geocode(lat: float, lon: float, language: str | None = None) -> dict:
+    """lat/lon → address. language: e.g. "de" or "en"."""
     try:
-        data = await _nominatim("/reverse", {"lat": lat, "lon": lon, "format": "json"})
+        data = await _nominatim("/reverse", _params(language, lat=lat, lon=lon))
     except ServiceError as exc:
         return exc.to_dict()
 
