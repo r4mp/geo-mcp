@@ -12,7 +12,8 @@
 
 - `geocode_address` — address to latitude/longitude
 - `reverse_geocode_coords` — location to human-readable address
-- `current_weather` — live weather data for any city
+- `current_weather` — live weather for a city or coordinates
+- `weather_forecast` — daily forecast for up to 16 days
 - `location_timezone` — timezone and local time for coordinates
 - `places_nearby` — nearby points of interest from OpenStreetMap
 
@@ -22,9 +23,10 @@ Built for developers, open source, and fast integration with modern tools.
 |------|-------------|----------|
 | `geocode_address` | Address → lat/lon | Nominatim (OSM) |
 | `reverse_geocode_coords` | lat/lon → address | Nominatim (OSM) |
-| `current_weather` | Live weather for any city | Open-Meteo |
+| `current_weather` | Live weather for a city or lat/lon | Open-Meteo |
+| `weather_forecast` | Daily forecast, 1–16 days | Open-Meteo |
 | `location_timezone` | Timezone + local time | computed locally (timezonefinder) |
-| `places_nearby` | POIs within a radius | Overpass (OSM) |
+| `places_nearby` | POIs within a radius, with opening status | Overpass (OSM) |
 
 All APIs are **free and open** — no signup, no keys. Errors from upstream services are returned as an `error` field instead of crashing the tool. Nominatim results are cached and requests are throttled to 1 per second, as its usage policy requires.
 
@@ -69,7 +71,8 @@ This repo now includes `app.py`, a lightweight HTTP wrapper around the same adap
 - Reverse proxy docs: `/redoc`
 - Geocode: `/geocode?address=...`
 - Reverse geocode: `/reverse-geocode?lat=...&lon=...`
-- Weather: `/weather?city=...`
+- Weather: `/weather?city=...` or `/weather?lat=...&lon=...`
+- Forecast: `/forecast?city=...&days=...` or `/forecast?lat=...&lon=...&days=...`
 - Timezone: `/timezone?lat=...&lon=...`
 - Nearby places: `/places?lat=...&lon=...&category=...&radius_m=...`
 
@@ -125,6 +128,12 @@ Find me hospitals within 500m of the Eiffel Tower.
 What time is it right now in lat 35.6762, lon 139.6503?
 ```
 ```
+Which cafés near Alexanderplatz are open right now?
+```
+```
+Will it rain in Vienna in the next three days?
+```
+```
 Geocode "1600 Pennsylvania Ave NW, Washington DC"
 ```
 
@@ -143,6 +152,7 @@ geo-mcp/
 │   ├── timezone.py        # Local timezone lookup
 │   └── places.py          # Overpass POI search + opening hours
 ├── tests/                 # pytest suite
+├── .github/workflows/     # CI: tests + uvx start
 ├── pyproject.toml         # Packaging + `geo-mcp` entry point (uvx)
 ├── requirements.txt
 └── Dockerfile
@@ -162,7 +172,10 @@ geo-mcp/
 }
 ```
 
-### `current_weather(city: str)`
+### `current_weather(city=None, lat=None, lon=None)`
+
+Pass a city name or `lat`/`lon` (skips geocoding).
+
 ```json
 {
   "city": "London",
@@ -175,11 +188,33 @@ geo-mcp/
 }
 ```
 
+### `weather_forecast(city=None, lat=None, lon=None, days=3)`
+
+```json
+{
+  "city": "Wien",
+  "timezone": "Europe/Vienna",
+  "days": [
+    {
+      "date": "2026-10-29",
+      "condition": "Overcast",
+      "temp_min_c": 9.8,
+      "temp_max_c": 12.4,
+      "precipitation_mm": 0.0,
+      "precipitation_probability_pct": 90,
+      "wind_speed_max_kmh": 12.0,
+      "sunrise": "2026-10-29T06:35",
+      "sunset": "2026-10-29T16:40"
+    }
+  ]
+}
+```
+
 ### `places_nearby(lat, lon, category, radius_m)`
 
 Supported categories: `restaurant`, `cafe`, `hospital`, `pharmacy`, `school`, `supermarket`, `park`, `hotel`, `bank`, `gas_station`
 
-Returns up to 10 places: open first, then unknown, then closed, each group sorted by distance. `open_now` is evaluated from the OSM `opening_hours` tag for the place's local time. `radius_m` is limited to 5000.
+Returns up to 10 places: open first, then unknown, then closed, each group sorted by distance. `open_now` is evaluated from the OSM `opening_hours` tag for the place's local time, including public holidays; `next_change` is when that state ends (e.g. closing time). `radius_m` is limited to 5000. If the main Overpass instance is slow or down, a second instance is used.
 
 ```json
 {
@@ -195,7 +230,8 @@ Returns up to 10 places: open first, then unknown, then closed, each group sorte
       "distance_m": 140,
       "address": "Monmouth Street 27, WC2H 9EU London",
       "opening_hours": "Mo-Fr 07:30-18:00",
-      "open_now": "yes"
+      "open_now": "yes",
+      "next_change": "2026-10-28T18:00"
     }
   ]
 }
@@ -256,6 +292,7 @@ async def exposed_tool_name(param: str) -> dict:
 - **[Open-Meteo](https://open-meteo.com/)** — free weather API
 - **[Nominatim](https://nominatim.org/)** — OpenStreetMap geocoding
 - **[Overpass API](https://overpass-api.de/)** — OpenStreetMap POI data
+- **[opening-hours-py](https://github.com/remi-dupre/opening-hours-rs)** — OSM opening hours evaluation
 - **[timezonefinder](https://github.com/jannikmi/timezonefinder)** — offline timezone lookup
 
 ---

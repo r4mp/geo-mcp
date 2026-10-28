@@ -4,23 +4,28 @@ No API key required.
 """
 
 import math
-import re
 import httpx
-from datetime import datetime, time, timedelta
+from datetime import datetime
 
-import humanized_opening_hours as hoh
+from opening_hours import OpeningHours, State
 
 from adapters.http import ServiceError, request_json
-from adapters.timezone import local_now
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-# The public Overpass instance regularly takes 30s+ to answer, mostly queueing.
+# Tried in order. The main instance regularly takes 30s+ to answer (mostly
+# queueing), so it gets a shorter timeout before falling back to the next one.
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
+]
+FALLBACK_TIMEOUT = httpx.Timeout(20, connect=5)
 TIMEOUT = httpx.Timeout(60, connect=10)
 # Larger radii make Overpass queries slow enough to time out.
 MAX_RADIUS_M = 5000
 MAX_RESULTS = 10
 # Overpass returns elements in no particular order, so fetch enough to find the nearest.
 FETCH_LIMIT = 200
+
+_STATE = {State.OPEN: "yes", State.CLOSED: "no", State.UNKNOWN: "unknown"}
 
 CATEGORY_MAP = {
     "restaurant": ("amenity", "restaurant"),
@@ -48,54 +53,25 @@ out center {FETCH_LIMIT};
 """
 
 
-_RANGE = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
-
-
-def _split_midnight(opening_hours: str) -> tuple[str, list[time]]:
+def _opening_state(opening_hours: str, lat: float, lon: float, now: datetime | None = None) -> dict:
     """
-    The parser cannot handle ranges past midnight ("10:00-01:00").
-    Such ranges are truncated to "10:00-24:00"; the post-midnight end
-    times are collected so the following day can be checked separately.
+    Evaluate the OSM value at the place's local time (timezone and public
+    holidays are derived from the coordinates).
+    open_now is yes / no / unknown; next_change is when that state ends.
     """
-    overflow: list[time] = []
-
-    def repl(m: re.Match) -> str:
-        h1, m1, h2, m2 = map(int, m.groups())
-        if (h2, m2) == (0, 0):  # "until 00:00" means "until midnight"
-            return f"{h1:02d}:{m1:02d}-24:00"
-        if (h2, m2) <= (h1, m1) or h2 >= 24:
-            h2 = h2 - 24 if h2 >= 24 else h2  # also handles "25:00" notation
-            overflow.append(time(h2, m2))
-            return f"{h1:02d}:{m1:02d}-24:00"
-        return m.group(0)
-
-    return _RANGE.sub(repl, opening_hours), overflow
-
-
-def _open_now(opening_hours: str, lat: float, lon: float) -> str:
-    """Evaluate the OSM value for the current local time: yes / no / unknown."""
     if not opening_hours:
-        return "unknown"
+        return {"open_now": "unknown", "next_change": None}
     try:
-        now = local_now(lat, lon).replace(tzinfo=None)
-        return "yes" if _is_open(opening_hours, now) else "no"
+        oh = OpeningHours(opening_hours, coords=(lat, lon))
+        state, _comment = oh.state(now)
+        change = oh.next_change(now)
     except Exception:
-        # e.g. sunrise/sunset or malformed values
-        return "unknown"
-
-
-def _is_open(opening_hours: str, now: datetime) -> bool:
-    cleaned, overflow = _split_midnight(opening_hours)
-    oh = hoh.OHParser(cleaned)
-    if oh.is_open(now):
-        return True
-    # After midnight: open if the place was open until 24:00 yesterday
-    # and the extended closing time has not been reached yet.
-    late = [t for t in overflow if now.time() < t]
-    if late:
-        yesterday_end = (now - timedelta(days=1)).replace(hour=23, minute=59, second=0)
-        return oh.is_open(yesterday_end)
-    return False
+        # malformed value
+        return {"open_now": "unknown", "next_change": None}
+    return {
+        "open_now": _STATE[state],
+        "next_change": change.replace(tzinfo=None).isoformat(timespec="minutes") if change else None,
+    }
 
 
 def _distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
@@ -134,12 +110,25 @@ def _build_places(elements: list[dict], lat: float, lon: float) -> list[dict]:
             "phone": tags.get("phone", tags.get("contact:phone", "")),
             "website": tags.get("website", tags.get("contact:website", "")),
             "opening_hours": oh or "not recorded",
-            "open_now": _open_now(oh, el_lat, el_lon),
+            **_opening_state(oh, el_lat, el_lon),
         })
 
     rank = {"yes": 0, "unknown": 1, "no": 2}
     places.sort(key=lambda p: (rank[p["open_now"]], p["distance_m"]))
     return places
+
+
+async def _overpass(query: str) -> dict:
+    """Run a query, falling back to the next instance on errors or timeouts."""
+    for url in OVERPASS_URLS[:-1]:
+        try:
+            return await request_json("POST", url, service="Overpass API",
+                                      timeout=FALLBACK_TIMEOUT, data={"data": query})
+        except ServiceError:
+            continue
+    # Last instance: full timeout, and one retry since overload is usually brief.
+    return await request_json("POST", OVERPASS_URLS[-1], service="Overpass API",
+                              timeout=TIMEOUT, retry=True, data={"data": query})
 
 
 async def nearby_places(lat: float, lon: float, category: str, radius_m: int = 1000) -> dict:
@@ -157,11 +146,7 @@ async def nearby_places(lat: float, lon: float, category: str, radius_m: int = 1
     query = _build_query(lat, lon, key, value, radius_m)
 
     try:
-        # The public instance is often overloaded; one retry usually helps.
-        data = await request_json(
-            "POST", OVERPASS_URL, service="Overpass API", timeout=TIMEOUT, retry=True,
-            data={"data": query},
-        )
+        data = await _overpass(query)
     except ServiceError as exc:
         return exc.to_dict()
 
