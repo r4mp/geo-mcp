@@ -45,6 +45,8 @@ async def places_nearby(lat: float, lon: float, category: str, radius_m: int = 1
     Find nearby places of interest using OpenStreetMap.
     Each place has "open_now" (yes/no/unknown), already evaluated for the
     current local time. Report "unknown" honestly instead of guessing.
+    Returns up to 10 places: open first, then unknown, then closed, each
+    group sorted by "distance_m". radius_m is limited to 5000.
 
     Categories: restaurant, cafe, hospital, pharmacy, school,
                 supermarket, park, hotel, bank, gas_station
