@@ -5,6 +5,7 @@ import httpx
 
 import adapters.geocoding as geocoding
 import adapters.http as http
+import adapters.places as places
 import adapters.weather as weather
 import server
 
@@ -20,6 +21,7 @@ def _mock_http(monkeypatch, handler):
     monkeypatch.setattr(http.httpx, "AsyncClient",
                         lambda **kw: real_client(transport=httpx.MockTransport(record), **kw))
     monkeypatch.setattr(geocoding, "_cache", {})
+    monkeypatch.setattr(geocoding, "MIN_INTERVAL_S", 0)
     return requests
 
 
@@ -89,8 +91,61 @@ def test_forecast_rejects_invalid_days():
 def test_mcp_schema_lists_categories():
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
     category = tools["places_nearby"].inputSchema["properties"]["category"]
-    assert category["enum"] == [
-        "restaurant", "cafe", "hospital", "pharmacy", "school",
-        "supermarket", "park", "hotel", "bank", "gas_station",
-    ]
+    assert category["enum"] == list(places.CATEGORY_MAP)
+    assert {"atm", "bakery", "toilets", "charging_station"} <= set(category["enum"])
     assert {"current_weather", "weather_forecast"} <= tools.keys()
+
+
+# --- geocoding: language and multiple candidates ----------------------------
+
+CANDIDATES = [
+    {"display_name": "Frankfurt am Main, Hessen, Deutschland", "lat": "50.11", "lon": "8.68", "type": "city"},
+    {"display_name": "Frankfurt (Oder), Brandenburg, Deutschland", "lat": "52.34", "lon": "14.55", "type": "town"},
+]
+
+
+def test_geocode_single_result_by_default(monkeypatch):
+    requests = _mock_http(monkeypatch, lambda r: httpx.Response(200, json=CANDIDATES[:1]))
+    result = asyncio.run(geocoding.geocode("Frankfurt"))
+    params = parse_qs(requests[0].url.query.decode())
+    assert params["limit"] == ["1"] and "accept-language" not in params
+    assert result["display_name"].startswith("Frankfurt am Main")
+    assert "results" not in result
+
+
+def test_geocode_lists_candidates_with_limit(monkeypatch):
+    requests = _mock_http(monkeypatch, lambda r: httpx.Response(200, json=CANDIDATES))
+    result = asyncio.run(geocoding.geocode("Frankfurt", limit=5))
+    assert parse_qs(requests[0].url.query.decode())["limit"] == ["5"]
+    assert result["lat"] == 50.11
+    assert [r["type"] for r in result["results"]] == ["city", "town"]
+
+
+def test_geocode_rejects_invalid_limit():
+    assert asyncio.run(geocoding.geocode("Frankfurt", limit=0))["status_code"] == 400
+    assert asyncio.run(geocoding.geocode("Frankfurt", limit=11))["status_code"] == 400
+
+
+def test_language_is_passed_to_nominatim(monkeypatch):
+    def handler(request):
+        if request.url.path == "/reverse":
+            return httpx.Response(200, json={"display_name": "Vienna, Austria", "address": {"city": "Vienna"}})
+        if "nominatim" in request.url.host:
+            return httpx.Response(200, json=[{"display_name": "Vienna, Austria", "lat": "48.2", "lon": "16.37"}])
+        return httpx.Response(200, json=CURRENT)
+
+    requests = _mock_http(monkeypatch, handler)
+    asyncio.run(geocoding.geocode("Wien", language="en"))
+    asyncio.run(geocoding.reverse_geocode(48.2, 16.37, language="en"))
+    result = asyncio.run(weather.get_weather("Wien", language="en"))
+    langs = [parse_qs(r.url.query.decode()).get("accept-language") for r in requests
+             if "nominatim" in r.url.host]
+    assert langs == [["en"], ["en"]]  # weather reuses the cached geocode result
+    assert result["city"] == "Vienna"
+
+
+def test_language_is_part_of_the_cache_key(monkeypatch):
+    requests = _mock_http(monkeypatch, lambda r: httpx.Response(200, json=CANDIDATES[:1]))
+    asyncio.run(geocoding.geocode("Frankfurt", language="de"))
+    asyncio.run(geocoding.geocode("Frankfurt", language="en"))
+    assert len(requests) == 2

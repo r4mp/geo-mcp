@@ -171,3 +171,48 @@ def test_overpass_reports_error_when_all_instances_fail(monkeypatch):
     assert "Overpass" in result["error"]
     # first instance once, last instance with one retry
     assert hosts == ["overpass-api.de", "overpass.openstreetmap.fr", "overpass.openstreetmap.fr"]
+
+
+def test_unnamed_places_only_for_some_categories():
+    elements = [{"type": "node", "lat": 52.52, "lon": 13.405, "tags": {"amenity": "toilets"}}]
+    assert places._build_places(elements, 52.52, 13.405, "toilets")[0]["name"] == "Toilets"
+    assert places._build_places(elements, 52.52, 13.405, "cafe") == []
+
+
+def test_brand_or_operator_used_as_name():
+    elements = [
+        {"type": "node", "lat": 52.52, "lon": 13.405, "tags": {"brand": "Starbucks"}},
+        {"type": "node", "lat": 52.52, "lon": 13.406, "tags": {"operator": "Sparkasse"}},
+    ]
+    names = {p["name"] for p in places._build_places(elements, 52.52, 13.405, "atm")}
+    assert names == {"Starbucks", "Sparkasse"}
+
+
+def test_extra_tags_only_when_recorded():
+    elements = [
+        _node("Pizza", 52.52, 13.405, cuisine="pizza", wheelchair="yes", outdoor_seating="no", takeaway="yes"),
+        _node("Plain", 52.52, 13.406),
+    ]
+    by_name = {p["name"]: p for p in places._build_places(elements, 52.52, 13.405, "restaurant")}
+    assert {k: by_name["Pizza"][k] for k in places.EXTRA_TAGS} == {
+        "cuisine": "pizza", "wheelchair": "yes", "outdoor_seating": "no", "takeaway": "yes"}
+    assert not set(places.EXTRA_TAGS) & by_name["Plain"].keys()
+
+
+def test_every_category_queries_its_osm_tag(monkeypatch):
+    queries = []
+
+    def handler(request):
+        queries.append(parse_qs(request.content.decode())["data"][0])
+        return httpx.Response(200, json={"elements": []})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(places.httpx, "AsyncClient",
+                        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+
+    async def run_all():
+        return [await places.nearby_places(52.52, 13.405, c, 300) for c in places.CATEGORY_MAP]
+
+    assert all("error" not in r for r in asyncio.run(run_all()))
+    for query, (key, value) in zip(queries, places.CATEGORY_MAP.values()):
+        assert f'node["{key}"="{value}"]' in query

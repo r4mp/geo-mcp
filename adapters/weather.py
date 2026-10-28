@@ -22,7 +22,9 @@ WMO_CODES = {
 MAX_FORECAST_DAYS = 16
 
 
-async def _resolve_location(city: str | None, lat: float | None, lon: float | None) -> dict:
+async def _resolve_location(
+    city: str | None, lat: float | None, lon: float | None, language: str | None = None,
+) -> dict:
     """Location from coordinates (preferred, no geocoding) or a city name."""
     if lat is not None and lon is not None:
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -31,7 +33,7 @@ async def _resolve_location(city: str | None, lat: float | None, lon: float | No
     if not city:
         return {"error": "Provide either city or both lat and lon", "status_code": 400}
 
-    location = await geocode(city)
+    location = await geocode(city, language=language)
     if "error" in location:
         return location
     return {
@@ -53,9 +55,12 @@ def _condition(code: int) -> str:
     return WMO_CODES.get(code, f"Unknown (WMO {code})")
 
 
-async def get_weather(city: str | None = None, lat: float | None = None, lon: float | None = None) -> dict:
+async def get_weather(
+    city: str | None = None, lat: float | None = None, lon: float | None = None,
+    language: str | None = None,
+) -> dict:
     """Fetch current weather for a city name or coordinates."""
-    location = await _resolve_location(city, lat, lon)
+    location = await _resolve_location(city, lat, lon, language)
     if "error" in location:
         return location
 
@@ -95,11 +100,12 @@ async def get_weather(city: str | None = None, lat: float | None = None, lon: fl
 
 async def get_forecast(
     city: str | None = None, lat: float | None = None, lon: float | None = None, days: int = 3,
+    language: str | None = None,
 ) -> dict:
     """Daily forecast (today first) for a city name or coordinates."""
     if not 1 <= days <= MAX_FORECAST_DAYS:
         return {"error": f"days must be within 1..{MAX_FORECAST_DAYS}", "status_code": 400}
-    location = await _resolve_location(city, lat, lon)
+    location = await _resolve_location(city, lat, lon, language)
     if "error" in location:
         return location
 
