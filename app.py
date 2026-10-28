@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from adapters.geocoding import geocode, reverse_geocode
-from adapters.weather import get_weather
+from adapters.weather import get_forecast, get_weather
 from adapters.timezone import get_timezone
 from adapters.places import nearby_places
 
@@ -34,7 +34,8 @@ async def root():
             "/healthz",
             "/geocode?address=...",
             "/reverse-geocode?lat=...&lon=...",
-            "/weather?city=...",
+            "/weather?city=... (or lat=...&lon=...)",
+            "/forecast?city=...&days=... (or lat=...&lon=...)",
             "/timezone?lat=...&lon=...",
             "/places?lat=...&lon=...&category=...&radius_m=...",
         ],
@@ -55,8 +56,22 @@ async def reverse_geocode_route(
 
 
 @app.get("/weather")
-async def weather_route(city: str = Query(..., description="City name")):
-    return _respond(await get_weather(city))
+async def weather_route(
+    city: str | None = Query(None, description="City name (or use lat/lon)"),
+    lat: float | None = Query(None, description="Latitude"),
+    lon: float | None = Query(None, description="Longitude"),
+):
+    return _respond(await get_weather(city, lat, lon))
+
+
+@app.get("/forecast")
+async def forecast_route(
+    city: str | None = Query(None, description="City name (or use lat/lon)"),
+    lat: float | None = Query(None, description="Latitude"),
+    lon: float | None = Query(None, description="Longitude"),
+    days: int = Query(3, description="Number of days (1-16)"),
+):
+    return _respond(await get_forecast(city, lat, lon, days))
 
 
 @app.get("/timezone")
