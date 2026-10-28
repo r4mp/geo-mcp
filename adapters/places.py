@@ -3,23 +3,19 @@ Nearby places adapter — powered by Overpass API (OpenStreetMap).
 No API key required.
 """
 
-import asyncio
 import math
 import re
 import httpx
 from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
 
 import humanized_opening_hours as hoh
-from timezonefinder import TimezoneFinder
 
-_tf = TimezoneFinder()
+from adapters.http import ServiceError, request_json
+from adapters.timezone import local_now
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-HEADERS = {"User-Agent": "geo-mcp/1.0 (github.com/fjollei/geo-mcp)", "Accept": "application/json"}
 # The public Overpass instance regularly takes 30s+ to answer, mostly queueing.
 TIMEOUT = httpx.Timeout(60, connect=10)
-RETRY_STATUS = {429, 502, 503, 504}
 # Larger radii make Overpass queries slow enough to time out.
 MAX_RADIUS_M = 5000
 MAX_RESULTS = 10
@@ -81,8 +77,7 @@ def _open_now(opening_hours: str, lat: float, lon: float) -> str:
     if not opening_hours:
         return "unknown"
     try:
-        tz = _tf.timezone_at(lat=lat, lng=lon) or "UTC"
-        now = datetime.now(ZoneInfo(tz)).replace(tzinfo=None)
+        now = local_now(lat, lon).replace(tzinfo=None)
         return "yes" if _is_open(opening_hours, now) else "no"
     except Exception:
         # e.g. sunrise/sunset or malformed values
@@ -161,28 +156,14 @@ async def nearby_places(lat: float, lon: float, category: str, radius_m: int = 1
     key, value = tag
     query = _build_query(lat, lon, key, value, radius_m)
 
-    async with httpx.AsyncClient(headers=HEADERS, timeout=TIMEOUT) as client:
-        try:
-            r = await client.post(OVERPASS_URL, data={"data": query})
-            if r.status_code in RETRY_STATUS:
-                # The public instance is often overloaded; one retry usually helps.
-                await asyncio.sleep(2)
-                r = await client.post(OVERPASS_URL, data={"data": query})
-            r.raise_for_status()
-            data = r.json()
-        except httpx.HTTPStatusError as exc:
-            return {
-                "error": "Overpass API request failed",
-                "status_code": exc.response.status_code,
-                "details": exc.response.text,
-            }
-        except httpx.TimeoutException:
-            return {
-                "error": f"Overpass API did not respond within {TIMEOUT.read:.0f}s. "
-                "The service is probably busy; try again later or with a smaller radius.",
-            }
-        except Exception as exc:
-            return {"error": f"Nearby places request failed: {type(exc).__name__}: {exc}"}
+    try:
+        # The public instance is often overloaded; one retry usually helps.
+        data = await request_json(
+            "POST", OVERPASS_URL, service="Overpass API", timeout=TIMEOUT, retry=True,
+            data={"data": query},
+        )
+    except ServiceError as exc:
+        return exc.to_dict()
 
     places = _build_places(data.get("elements", []), lat, lon)
     result = {

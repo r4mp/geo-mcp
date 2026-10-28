@@ -23,10 +23,10 @@ Built for developers, open source, and fast integration with modern tools.
 | `geocode_address` | Address → lat/lon | Nominatim (OSM) |
 | `reverse_geocode_coords` | lat/lon → address | Nominatim (OSM) |
 | `current_weather` | Live weather for any city | Open-Meteo |
-| `location_timezone` | Timezone + local time | timeapi.io |
+| `location_timezone` | Timezone + local time | computed locally (timezonefinder) |
 | `places_nearby` | POIs within a radius | Overpass (OSM) |
 
-All APIs are **free and open** — no signup, no keys, no rate-limit surprises for personal use.
+All APIs are **free and open** — no signup, no keys. Errors from upstream services are returned as an `error` field instead of crashing the tool. Nominatim results are cached and requests are throttled to 1 per second, as its usage policy requires.
 
 ---
 
@@ -135,15 +135,17 @@ Geocode "1600 Pennsylvania Ave NW, Washington DC"
 ```
 geo-mcp/
 ├── server.py              # FastMCP server + tool definitions
+├── app.py                 # HTTP wrapper (FastAPI) for container hosts
 ├── adapters/
-│   ├── geocoding.py       # Nominatim geocoder
+│   ├── http.py            # Shared HTTP helper: timeouts, retries, error messages
+│   ├── geocoding.py       # Nominatim geocoder (cached, 1 req/s)
 │   ├── weather.py         # Open-Meteo weather
-│   ├── timezone.py        # timeapi.io timezone
-│   └── places.py          # Overpass POI search
+│   ├── timezone.py        # Local timezone lookup
+│   └── places.py          # Overpass POI search + opening hours
+├── tests/                 # pytest suite
 ├── pyproject.toml         # Packaging + `geo-mcp` entry point (uvx)
 ├── requirements.txt
-├── Dockerfile
-└── claude_desktop_config.json
+└── Dockerfile
 ```
 
 ---
@@ -254,7 +256,7 @@ async def exposed_tool_name(param: str) -> dict:
 - **[Open-Meteo](https://open-meteo.com/)** — free weather API
 - **[Nominatim](https://nominatim.org/)** — OpenStreetMap geocoding
 - **[Overpass API](https://overpass-api.de/)** — OpenStreetMap POI data
-- **[timeapi.io](https://timeapi.io/)** — timezone lookup
+- **[timezonefinder](https://github.com/jannikmi/timezonefinder)** — offline timezone lookup
 
 ---
 
