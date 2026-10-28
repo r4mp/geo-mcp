@@ -69,8 +69,8 @@ This repo now includes `app.py`, a lightweight HTTP wrapper around the same adap
 - Swagger UI: `/docs`
 - OpenAPI JSON: `/openapi.json`
 - Reverse proxy docs: `/redoc`
-- Geocode: `/geocode?address=...`
-- Reverse geocode: `/reverse-geocode?lat=...&lon=...`
+- Geocode: `/geocode?address=...&limit=...&language=...`
+- Reverse geocode: `/reverse-geocode?lat=...&lon=...&language=...`
 - Weather: `/weather?city=...` or `/weather?lat=...&lon=...`
 - Forecast: `/forecast?city=...&days=...` or `/forecast?lat=...&lon=...&days=...`
 - Timezone: `/timezone?lat=...&lon=...`
@@ -162,13 +162,20 @@ geo-mcp/
 
 ## Tool reference
 
-### `geocode_address(address: str)`
+### `geocode_address(address, limit=1, language=None)`
+
+Returns the best match. With `limit` > 1 (max 10), `results` lists the candidates — useful for ambiguous names. `language` (e.g. `"de"`, `"en"`) sets the language of names; by default Nominatim uses the local language of the place. `reverse_geocode_coords`, `current_weather` and `weather_forecast` accept `language` too.
+
 ```json
 {
-  "display_name": "Paris, Île-de-France, France",
-  "lat": 48.8566,
-  "lon": 2.3522,
-  "type": "city"
+  "display_name": "Frankfurt, Hesse, Germany",
+  "lat": 50.1106,
+  "lon": 8.6821,
+  "type": "city",
+  "results": [
+    { "display_name": "Frankfurt, Hesse, Germany", "lat": 50.1106, "lon": 8.6821, "type": "city" },
+    { "display_name": "Frankfurt (Oder), Brandenburg, Germany", "lat": 52.3471, "lon": 14.5506, "type": "town" }
+  ]
 }
 ```
 
@@ -212,7 +219,9 @@ Pass a city name or `lat`/`lon` (skips geocoding).
 
 ### `places_nearby(lat, lon, category, radius_m)`
 
-Supported categories: `restaurant`, `cafe`, `hospital`, `pharmacy`, `school`, `supermarket`, `park`, `hotel`, `bank`, `gas_station`
+Supported categories: `restaurant`, `cafe`, `hospital`, `pharmacy`, `school`, `supermarket`, `park`, `hotel`, `bank`, `gas_station`, `atm`, `bar`, `pub`, `fast_food`, `bakery`, `doctor`, `dentist`, `toilets`, `parking`, `charging_station`, `museum`, `post_office`, `police`
+
+Places without a name use their brand or operator. Unnamed ATMs, toilets, parking and charging stations are listed too. Where recorded in OSM, places include `cuisine`, `wheelchair`, `outdoor_seating` and `takeaway`.
 
 Returns up to 10 places: open first, then unknown, then closed, each group sorted by distance. `open_now` is evaluated from the OSM `opening_hours` tag for the place's local time, including public holidays; `next_change` is when that state ends (e.g. closing time). `radius_m` is limited to 5000. If the main Overpass instance is slow or down, a second instance is used.
 
@@ -231,7 +240,9 @@ Returns up to 10 places: open first, then unknown, then closed, each group sorte
       "address": "Monmouth Street 27, WC2H 9EU London",
       "opening_hours": "Mo-Fr 07:30-18:00",
       "open_now": "yes",
-      "next_change": "2026-10-28T18:00"
+      "next_change": "2026-10-28T18:00",
+      "cuisine": "coffee_shop",
+      "wheelchair": "yes"
     }
   ]
 }

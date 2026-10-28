@@ -43,16 +43,21 @@ async def root():
 
 
 @app.get("/geocode")
-async def geocode_route(address: str = Query(..., description="The address to geocode")):
-    return _respond(await geocode(address))
+async def geocode_route(
+    address: str = Query(..., description="The address to geocode"),
+    limit: int = Query(1, description="Number of candidates (1-10)"),
+    language: str | None = Query(None, description='Language for names, e.g. "de"'),
+):
+    return _respond(await geocode(address, limit, language))
 
 
 @app.get("/reverse-geocode")
 async def reverse_geocode_route(
     lat: float = Query(..., description="Latitude"),
     lon: float = Query(..., description="Longitude"),
+    language: str | None = Query(None, description='Language for names, e.g. "de"'),
 ):
-    return _respond(await reverse_geocode(lat, lon))
+    return _respond(await reverse_geocode(lat, lon, language))
 
 
 @app.get("/weather")
@@ -60,8 +65,9 @@ async def weather_route(
     city: str | None = Query(None, description="City name (or use lat/lon)"),
     lat: float | None = Query(None, description="Latitude"),
     lon: float | None = Query(None, description="Longitude"),
+    language: str | None = Query(None, description='Language for names, e.g. "de"'),
 ):
-    return _respond(await get_weather(city, lat, lon))
+    return _respond(await get_weather(city, lat, lon, language))
 
 
 @app.get("/forecast")
@@ -70,8 +76,9 @@ async def forecast_route(
     lat: float | None = Query(None, description="Latitude"),
     lon: float | None = Query(None, description="Longitude"),
     days: int = Query(3, description="Number of days (1-16)"),
+    language: str | None = Query(None, description='Language for names, e.g. "de"'),
 ):
-    return _respond(await get_forecast(city, lat, lon, days))
+    return _respond(await get_forecast(city, lat, lon, days, language))
 
 
 @app.get("/timezone")
